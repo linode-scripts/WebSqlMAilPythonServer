@@ -1,0 +1,320 @@
+#!/bin/bash
+#
+# Installs a complete web environment with Nginx, Python, and PostgreSQL.
+# Source https://github.com/linode-scripts/WebSqlMAilPythonServer/new/master/14032
+#
+# <UDF name="user_name" label="Unprivileged user account name" example="This is the account that you will be using to log in." />
+# <UDF name="user_password" label="Unprivileged user password"/>
+# <UDF name="user_sshkey" default="" label="Public Key for User" example="Recommended method of authentication. It is more secure than password log in." />
+# <UDF name="user_shell" label="Shell" oneof="/bin/zsh,/bin/bash" default="/bin/bash" />
+# <UDF name="sshd_passwordauth" label="Use SSH password authentication" oneof="Yes,No" default="No" example="Turn off password authentication if you have added a Public Key." />
+# <UDF name="sshd_permitrootlogin" label="Permit SSH root login" oneof="No,Yes" default="No" example="Root account should not be exposed." />
+#
+# <UDF name="host_name" label="Hostname" default="" example="leave empty to set the default hostname" />
+# <UDF name="sql_variant" Label="Pick one of" oneOf="postgresql,mariadb,none" example="Choose your sql server" />
+# <UDF name="db_root_password" label="Root password for Database" />
+#
+# <UDF name="webserver" label="Webserver" oneof="none,nginx,apache" default="none" />
+#
+# <UDF name="install_postfix" label="Postfix for mail" oneof="No,Yes" default="No" example="Postfix for transport of emails" />
+# <UDF name="postfix_hostmaster" label="Which hostname used for outbound mail" default="yourhostname.com" example="Only answer if using postfix" />
+
+
+set -e # Exit immediately if a command exits with a non-zero status.
+set -u #
+
+exec &> /root/stackscript.log
+
+export DEBIAN_FRONTEND=noninteractive
+
+###########################################################
+# Configuration file that could be change to your needs
+###########################################################
+
+USER_GROUPS=sudo
+# If webserver choosen
+FIREWALL_WEBSERVER_NOT_CHOOSEN_OPEN_PORTS_ANYWAY=yes
+FIREWALL_WEBSERVER_SSL_PORT_ACCEPT=443
+FIREWALL_WEBSERVER_PORT_ACCEPT=80
+FIREWALL_WEBSERVER_ALT_PORT_ACCEPT=8080
+
+###########################################################
+# Create user
+###########################################################
+
+function lower {
+    echo $1 | tr '[:upper:]' '[:lower:]'
+}
+
+function system_add_user {
+    # system_add_user (USERNAME, USER_PASSWORD, USER_GROUPS, USER_SHELL=/bin/bash)
+    USERNAME=`lower $1`
+    USER_PASSWORD=$2
+    USER_GROUPS=$3
+    USER_SHELL=$4
+    if [ -z "$4" ]; then
+        SHELL="/bin/bash"
+    fi
+    useradd --create-home -G "$USER_GROUPS" -s "$USER_SHELL" "$USERNAME"
+    echo "$USERNAME:$USER_PASSWORD" | chpasswd
+}
+
+function system_get_user_home {
+    # system_get_user_home(username)
+    cat /etc/passwd | grep "^$1:" | cut --delimiter=":" -f6
+}
+
+function system_user_add_ssh_key {
+    # system_user_add_ssh_key(username, ssh_key)
+    USERNAME=`lower $1`
+    USER_HOME=`system_get_user_home "$USERNAME"`
+    sudo -u "$USERNAME" mkdir "$USER_HOME/.ssh"
+    sudo -u "$USERNAME" touch "$USER_HOME/.ssh/authorized_keys"
+    sudo -u "$USERNAME" echo "$2" >> "$USER_HOME/.ssh/authorized_keys"
+    chmod 0600 "$USER_HOME/.ssh/authorized_keys"
+}
+
+function system_sshd_edit_bool {
+    # system_sshd_edit_bool (param_name, "Yes"|"No")
+    VALUE=`lower $2`
+    if [ "$VALUE" == "yes" ] || [ "$VALUE" == "no" ]; then
+        sed -i "s/^#*\($1\).*/\1 $VALUE/" /etc/ssh/sshd_config
+    fi
+}
+
+function system_sshd_permitrootlogin {
+    system_sshd_edit_bool "PermitRootLogin" "$1"
+}
+
+function system_sshd_passwordauthentication {
+    system_sshd_edit_bool "PasswordAuthentication" "$1"
+}
+
+###########################################################
+# System
+###########################################################
+
+function system_update {
+    apt-get -q update
+    apt-get -y -q install aptitude
+    aptitude -y -q full-upgrade
+}
+
+function system_primary_ip {
+    # returns the primary IP assigned to eth0
+    echo $(ifconfig eth0 | awk -F: '/inet addr:/ {print $2}' | awk '{ print $1 }')
+}
+
+function get_rdns {
+    # calls host on an IP address and returns its reverse dns
+
+    if [ ! -e /usr/bin/host ]; then
+        aptitude -yqq install dnsutils > /dev/null
+    fi
+    echo $(host $1 | awk '/pointer/ {print $5}' | sed 's/\.$//')
+}
+
+function get_rdns_primary_ip {
+    # returns the reverse dns of the primary IP assigned to this system
+    echo $(get_rdns $(system_primary_ip))
+}
+
+function system_set_hostname {
+    # $1 - The hostname to define
+    HOSTNAME="$1"
+        
+    if [ ! -n "$HOSTNAME" ]; then
+        echo "Hostname undefined"
+        return 1;
+    fi
+    
+    echo "$HOSTNAME" > /etc/hostname
+    hostname -F /etc/hostname
+}
+
+###########################################################
+# Setting hostname
+###########################################################
+
+echo -e "\n********************************************************"
+echo -e "* Setting hostname"
+echo -e "********************************************************"
+if [ -z "${HOST_NAME}" ]; then
+  HOST_NAME="$(get_rdns_primary_ip)"
+fi
+echo "$HOST_NAME" > /etc/hostname
+hostname -F /etc/hostname
+
+echo "Hostname : $HOST_NAME"
+echo -e "\nFinish"
+
+###########################################################
+# Setting superuser
+###########################################################
+
+echo -e "\n********************************************************"
+echo -e "* Create superuser"
+echo -e "********************************************************"
+
+system_add_user "$USER_NAME" "$USER_PASSWORD" "$USER_GROUPS" "$USER_SHELL"
+
+if [ "$USER_SSHKEY" ]; then
+    system_user_add_ssh_key "$USER_NAME" "$USER_SSHKEY"
+fi
+
+# Configure sshd
+system_sshd_permitrootlogin "$SSHD_PERMITROOTLOGIN"
+system_sshd_passwordauthentication "$SSHD_PASSWORDAUTH"
+
+echo -e "\nFinish"
+
+###########################################################
+# Updating system software
+###########################################################
+
+echo -e "\n********************************************************"
+echo -e "* Update software"
+echo -e "********************************************************"
+system_update
+
+echo -e "\nFinish"
+
+###########################################################
+# Secure server with firewall
+###########################################################
+
+echo -e "\n********************************************************"
+echo -e "* Firewall reject all traffic except ping and port 22 for remote admin of server"
+echo -e "********************************************************"
+
+cat <<EOT >> /etc/iptables.up.rules
+*filter
+
+# Allows all loopback (lo0) traffic and drop all traffic to 127/8 that doesn't use lo0
+-A INPUT -i lo -j ACCEPT
+-A INPUT ! -i lo -d 127.0.0.0/8 -j REJECT
+
+# Accepts all established inbound connections
+-A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+
+# Allows all outbound traffic
+# You could modify this to only allow certain traffic
+-A OUTPUT -j ACCEPT
+
+# Allows SSH connections 
+# The --dport number is the same as in /etc/ssh/sshd_config
+-A INPUT -p tcp -m state --state NEW --dport 22 -j ACCEPT
+
+# Now you should read up on iptables rules and consider whether ssh access 
+# for everyone is really desired. Most likely you will only allow access from certain IPs.
+
+# Allow ping
+#  note that blocking other types of icmp packets is considered a bad idea by some
+#  remove -m icmp --icmp-type 8 from this line to allow all kinds of icmp:
+#  https://security.stackexchange.com/questions/22711
+-A INPUT -p icmp -m icmp --icmp-type 8 -j ACCEPT
+
+# log iptables denied calls (access via 'dmesg' command)
+-A INPUT -m limit --limit 5/min -j LOG --log-prefix "iptables denied: " --log-level 7
+
+# Reject all other inbound - default deny unless explicitly allowed policy:
+-A INPUT -j REJECT
+-A FORWARD -j REJECT
+
+COMMIT
+EOT
+
+cat <<EOT >> /etc/network/if-pre-up.d/iptables
+#!/bin/sh
+/sbin/iptables-restore < /etc/iptables.up.rules
+EOT
+chmod +x /etc/network/if-pre-up.d/iptables
+
+iptables-restore < /etc/iptables.up.rules
+
+echo -e "DONE first step of secure server with firewall"
+
+###########################################################
+# Sql server
+###########################################################
+
+case "${SQL_VARIANT}" in 
+  postgresql)
+    echo -e "\n********************************************************"
+    echo -e "* Install Postgresql server"
+    echo -e "********************************************************"
+    aptitude -y -q install postgresql postgresql-client
+    echo " DONE"
+    ;;
+  mariadb)
+    echo -e "\n********************************************************"
+    echo -e "* Install mariaDb server"
+    echo -e "********************************************************"
+    debconf-set-selections <<< "maria-db mysql-server/root_password password $DB_ROOT_PASSWORD"
+    debconf-set-selections <<< "maria-db mysql-server/root_password_again password $DB_ROOT_PASSWORD"
+    aptitude -y -q install mariadb-server mariadb-client
+    # Secure Mariadb
+    echo -e "\n* Secure MariaDb"
+    mysql -u root -p"$DB_ROOT_PASSWORD" -e "UPDATE mysql.user SET Password=PASSWORD('$DB_ROOT_PASSWORD') WHERE User='root'"
+    mysql -u root -p"$DB_ROOT_PASSWORD" -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1')"
+    mysql -u root -p"$DB_ROOT_PASSWORD" -e "DELETE FROM mysql.user WHERE User=''"
+    mysql -u root -p"$DB_ROOT_PASSWORD" -e "DELETE FROM mysql.db WHERE Db='test' OR Db='test\_%'"
+    mysql -u root -p"$DB_ROOT_PASSWORD" -e "FLUSH PRIVILEGES"
+    echo -e "DONE install of mariaDb"
+    ;;
+esac
+
+###########################################################
+# Postfix
+###########################################################
+
+if [[ $INSTALL_POSTFIX == yes ]]; then
+    echo -e "\n********************************************************"
+    echo -e "* Installing postfix"
+    echo -e "********************************************************"
+
+    debconf-set-selections <<< "postfix postfix/main_mailer_type string 'Internet Site'"
+    debconf-set-selections <<< "postfix postfix/mailname string $POSTFIX_HOSTMASTER"
+
+    aptitude -y -q install postfix
+
+    echo -e "DONE install postfix"
+fi
+
+###########################################################
+# Webserver
+###########################################################
+
+case "${WEBSERVER}" in
+    nginx)
+        echo -e "\n********************************************************"
+        echo -e "* Installing nginx"
+        echo -e "********************************************************"
+        aptitude -y -q install nginx
+    ;;
+    apache)
+        echo -e "\n********************************************************"
+        echo -e "* Installing apache"
+        echo -e "********************************************************"
+        aptitude -y -q install apache
+    ;;
+    [nginx]|[apache])
+        echo "open ports in firewall"
+        iptables -A INPUT -p tcp --dport 8080 -j ACCEPT
+        iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+        iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+        iptables-save > /etc/iptables.up.rules
+        echo -e "DONE install webserver"
+    ;;
+    none)
+        if [[$FIREWALL_WEBSERVER_NOT_CHOOSEN_OPEN_PORTS_ANYWAY == yes]]; then
+            echo "open webports in firewall"
+            iptables -A INPUT -p tcp --dport 8080 -j ACCEPT
+            iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+            iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+            iptables-save > /etc/iptables.up.rules
+            echo "DONE"
+        fi
+esac
+
+echo -e "Script Finish :)"

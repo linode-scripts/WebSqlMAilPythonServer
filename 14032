@@ -31,6 +31,7 @@ export DEBIAN_FRONTEND=noninteractive
 ###########################################################
 
 USER_GROUPS=sudo
+SQL_SERVER_ROOT_PASSWORD=$USER_PASSWORD
 # If webserver choosen
 FIREWALL_WEBSERVER_NOT_CHOOSEN_OPEN_PORTS_ANYWAY=no
 # FIREWALL_WEBSERVER_SSL_PORT_ACCEPT=443
@@ -251,16 +252,16 @@ case "${SQL_VARIANT}" in
     echo -e "\n********************************************************"
     echo -e "* Install mariaDb server"
     echo -e "********************************************************"
-    debconf-set-selections <<< "maria-db mysql-server/root_password password $USER_PASSWORD"
-    debconf-set-selections <<< "maria-db mysql-server/root_password_again password $USER_PASSWORD"
+    debconf-set-selections <<< "maria-db mysql-server/root_password password $SQL_SERVER_ROOT_PASSWORD"
+    debconf-set-selections <<< "maria-db mysql-server/root_password_again password $SQL_SERVER_ROOT_PASSWORD"
     aptitude -y -q install mariadb-server mariadb-client
     # Secure Mariadb
     echo -e "\n* Secure MariaDb"
-    mysql -u root -p"$USER_PASSWORD" -e "UPDATE mysql.user SET Password=PASSWORD('$USER_PASSWORD') WHERE User='root'"
-    mysql -u root -p"$USER_PASSWORD" -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1')"
-    mysql -u root -p"$USER_PASSWORD" -e "DELETE FROM mysql.user WHERE User=''"
-    mysql -u root -p"$USER_PASSWORD" -e "DELETE FROM mysql.db WHERE Db='test' OR Db='test\_%'"
-    mysql -u root -p"$USER_PASSWORD" -e "FLUSH PRIVILEGES"
+    mysql -u root -p"$SQL_SERVER_ROOT_PASSWORD" -e "UPDATE mysql.user SET Password=PASSWORD('$SQL_SERVER_ROOT_PASSWORD') WHERE User='root'"
+    mysql -u root -p"$SQL_SERVER_ROOT_PASSWORD" -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1')"
+    mysql -u root -p"$SQL_SERVER_ROOT_PASSWORD" -e "DELETE FROM mysql.user WHERE User=''"
+    mysql -u root -p"$SQL_SERVER_ROOT_PASSWORD" -e "DELETE FROM mysql.db WHERE Db='test' OR Db='test\_%'"
+    mysql -u root -p"$SQL_SERVER_ROOT_PASSWORD" -e "FLUSH PRIVILEGES"
     echo -e "DONE install of mariaDb"
     ;;
 esac

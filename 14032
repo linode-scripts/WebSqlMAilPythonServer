@@ -272,7 +272,7 @@ echo -e "DONE first step of secure server with firewall"
 # Sql server
 ###########################################################
 
-case "${SQL_VARIANT}" in 
+case "${SQL_SERVER}" in 
   postgresql)
     echo -e "\n********************************************************"
     echo -e "* Install Postgresql server"

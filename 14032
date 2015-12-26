@@ -403,7 +403,7 @@ case "${SQL_SERVER}" in
     	(id, domain_id, password , email)
     	VALUES
     	('1', '1', ENCRYPT('$PASSWORD', CONCAT('\$6\$', SUBSTRING(SHA(RAND()), -16))), '$EMAIL');
-    EOF    
+EOF
   ;;
 esac
 echo -e "DONE install postfix"

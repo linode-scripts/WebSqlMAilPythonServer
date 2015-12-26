@@ -32,11 +32,25 @@ export DEBIAN_FRONTEND=noninteractive
 
 USER_GROUPS=sudo
 SQL_SERVER_ROOT_PASSWORD=$USER_PASSWORD
-# If webserver choosen
+FIREWALL_RULES_UP_FILENAME="/etc/iptables.up.rules"
+
 FIREWALL_WEBSERVER_NOT_CHOOSEN_OPEN_PORTS_ANYWAY=no
 # FIREWALL_WEBSERVER_SSL_PORT_ACCEPT=443
 # FIREWALL_WEBSERVER_PORT_ACCEPT=80
 # FIREWALL_WEBSERVER_ALT_PORT_ACCEPT=8080
+
+# Mail settings
+DB_MAIL_DB_NAME="servermail"
+DB_MAIL_USER="usermail"
+DB_MAIL_USER_PASSWORD="mailpassword"
+
+FIREWALL_SENDMAIL=25
+FIREWALL_SENDMAIL_SUBMISSION=587
+FIREWALL_IMAP=143
+FIREWALL_IMAPS=993
+FIREWALL_POP=110
+FIREWALL_POPS=465
+FIREWALL_POPS3=993
 
 ###########################################################
 # Create user
@@ -130,6 +144,24 @@ function system_set_hostname {
     
     echo "$HOSTNAME" > /etc/hostname
     hostname -F /etc/hostname
+}
+
+###########################################################
+# Helping tools
+###########################################################
+
+firewall_delete_rule () {
+  grep -v "$1" $FIREWALL_RULES_UP_FILENAME > /etc/iptables.new.rules
+  iptables-restore < /etc/iptables.new.rules
+  iptables-save > /etc/iptables.up.rules
+}
+
+firewall_add_rule () {
+  firewall_delete_rule "dport $1"
+  firewall_delete_rule "sport $1"
+  iptables -A INPUT -p tcp --dport $1 -m state --state NEW,ESTABLISHED -j ACCEPT
+  iptables -A OUTPUT -p tcp --sport $1 -m state --state ESTABLISHED -j ACCEPT
+  iptables-save > /etc/iptables.up.rules
 }
 
 ###########################################################
@@ -270,30 +302,111 @@ esac
 # Postfix
 ###########################################################
 
-if [[ $INSTALL_POSTFIX == yes ]]; then
-    echo -e "\n********************************************************"
-    echo -e "* Installing postfix"
-    echo -e "********************************************************"
+echo -e "\n********************************************************"
+echo -e "* Installing postfix and dovecot"
+echo -e "********************************************************"
 
-    debconf-set-selections <<< "postfix postfix/main_mailer_type string 'Internet Site'"
-    debconf-set-selections <<< "postfix postfix/mailname string $POSTFIX_HOSTMASTER"
+debconf-set-selections <<< "postfix postfix/main_mailer_type string 'Internet Site'"
+debconf-set-selections <<< "postfix postfix/mailname string $POSTFIX_HOSTMASTER"
 
-    aptitude -y -q install postfix
+aptitude -y -q install postfix
+aptitude -y -q install dovecot-core
+aptitude -y -q install dovecot-lmtpd
+[[ -n "$FIREWALL_IMAP" || -n "$FIREWALL_IMAPS" ]] && aptitude -y -q install dovecot-imapd
+[[ -n "$FIREWALL_POP" || -n "$FIREWALL_POPS" || -n "$FIREWALL_POPS3" ]] && aptitude -y -q install dovecot-pop3d
 
-    echo "open for email transfer in firewall"
 
-    # 20. Allow Sendmail or Postfix
-    iptables -A INPUT -p tcp --dport 25 -m state --state NEW,ESTABLISHED -j ACCEPT
-    iptables -A OUTPUT -p tcp --sport 25 -m state --state ESTABLISHED -j ACCEPT
+case "${SQL_SERVER}" in
+  psql)
+    aptitude -y -q install postfix-pgsql
+    aptitude -y -q install dovecot-pgsql
+  ;;
+  mysql)
+    aptitude -y -q install postfix-mysql
+    aptitude -y -q install dovecot-mysql
+  ;;
+esac
 
-    # 21. Allow IMAP and IMAPS
-    iptables -A INPUT -p tcp --dport 143 -m state --state NEW,ESTABLISHED -j ACCEPT
-    iptables -A OUTPUT -o tcp --sport 143 -m state --state ESTABLISHED -j ACCEPT
+echo -e "\n********************************************************"
+echo -e "* Setting firewall"
+echo -e "********************************************************"
 
-    iptables-save > /etc/iptables.up.rules
+# Allow Sendmail
+[ ! -z "$FIREWALL_SENDMAIL" ] && firewall_add_rule $FIREWALL_SENDMAIL
 
-    echo -e "DONE install postfix"
-fi
+# Allow sendmail via submission port
+[ ! -z "$FIREWALL_SENDMAIL_SUBMISSION" ] && firewall_add_rule $FIREWALL_SENDMAIL_SUBMISSION
+
+# Allow IMAP
+[ ! -z "$FIREWALL_IMAP" ] && firewall_add_rule $FIREWALL_IMAP
+
+# Allow IMAPs
+[ ! -z "$FIREWALL_IMAPS" ] && firewall_add_rule $FIREWALL_IMAPS
+
+# Allow pop
+[ ! -z "$FIREWALL_POP" ] && firewall_add_rule $FIREWALL_POP
+
+# Allow pops
+[ ! -z "$FIREWALL_POPS" ] && firewall_add_rule $FIREWALL_POPS
+
+# Allow pop3s
+[ ! -z "$FIREWALL_POPS3" ] && firewall_add_rule $FIREWALL_POPS3
+
+echo -e "\n********************************************************"
+echo -e "* Making database for user authentication"
+echo -e "********************************************************"
+
+[ -z "$SQL_SERVER" ] && {
+  echo "* Missing SQL server. Can't find any one installed :("
+  exit 1
+}
+
+case "${SQL_SERVER}" in
+  psql)
+    #TODO sql script that make DB for dovecot
+  ;;
+  mysql)
+    cat <<EOF | mysql -uroot -p$SQL_SERVER_ROOT_PASSWORD
+    
+    	CREATE DATABASE IF NOT EXISTS $DB_MAIL_DB_NAME;
+    	GRANT SELECT ON $DB_MAIL_DB_NAME.* TO '$DB_USER'@'127.0.0.1' IDENTIFIED BY '$DB_USER_PASS';
+    	FLUSH PRIVILEGES;
+    	USE $DB_MAIL_DB_NAME;
+    	CREATE TABLE IF NOT EXISTS virtual_domains (
+    	id  INT NOT NULL AUTO_INCREMENT,
+    	name VARCHAR(50) NOT NULL,
+    	PRIMARY KEY (id)
+    	) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+    	CREATE TABLE IF NOT EXISTS virtual_users (
+    	id INT NOT NULL AUTO_INCREMENT,
+    	domain_id INT NOT NULL,
+    	password VARCHAR(106) NOT NULL,
+    	email VARCHAR(120) NOT NULL,
+    	PRIMARY KEY (id),
+    	UNIQUE KEY email (email),
+    	FOREIGN KEY (domain_id) REFERENCES virtual_domains(id) ON DELETE CASCADE
+    	) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+    	CREATE TABLE IF NOT EXISTS virtual_aliases (
+    	id INT NOT NULL AUTO_INCREMENT,
+    	domain_id INT NOT NULL,
+    	source varchar(100) NOT NULL,
+    	destination varchar(100) NOT NULL,
+    	PRIMARY KEY (id),
+    	FOREIGN KEY (domain_id) REFERENCES virtual_domains(id) ON DELETE CASCADE
+    	) ENGINE=InnoDB DEFAULT CHARSET=utf8;
+    	INSERT INTO servermail.virtual_domains
+    	(id ,name)
+    	VALUES
+    	('1', '$DOMAIN'),
+    	('2', 'mail.$DOMAIN');
+    	INSERT INTO servermail.virtual_users
+    	(id, domain_id, password , email)
+    	VALUES
+    	('1', '1', ENCRYPT('$PASSWORD', CONCAT('\$6\$', SUBSTRING(SHA(RAND()), -16))), '$EMAIL');
+    EOF    
+  ;;
+esac
+echo -e "DONE install postfix"
 
 ###########################################################
 # Webserver

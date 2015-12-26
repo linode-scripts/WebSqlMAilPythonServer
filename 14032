@@ -11,7 +11,7 @@
 # <UDF name="sshd_permitrootlogin" label="Permit SSH root login" oneof="No,Yes" default="No" example="Root account should not be exposed." />
 #
 # <UDF name="host_name" label="Hostname" default="" example="leave empty to set the default hostname" />
-# <UDF name="sql_variant" Label="Pick one of" oneOf="postgresql,mariadb,none" example="Choose your sql server. (Mysql password is the same as superuser)" />
+# <UDF name="SQL_SERVER" Label="Pick one of" oneOf="postgresql,mariadb,none" example="Choose your sql server. (Mysql password is the same as superuser)" />
 #
 # <UDF name="webserver" label="Webserver" oneof="none,nginx,apache" default="none" />
 #
